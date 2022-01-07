@@ -1,5 +1,6 @@
 use std::{collections::HashMap, net::SocketAddr, result::Result, sync::Arc, time::Duration};
 
+use time::OffsetDateTime;
 use tokio::{self, net::UdpSocket, task::JoinHandle};
 
 use chatroom_core::{
@@ -287,7 +288,10 @@ async fn announce_online<Coder: Options + Copy>(
   sock: Arc<UdpSocket>,
 ) {
   let username = user_info.name.clone();
-  let notification = Notification::Online(user_info);
+  let notification = Notification::Online {
+    timestamp: OffsetDateTime::now_utc(),
+    user_info,
+  };
   let mut buf = vec![0u8, 2];
   state.coder.serialize_into(&mut buf, &notification).unwrap(); // TODO: log error
 
@@ -312,7 +316,10 @@ async fn announce_offline<Coder: Options + Copy>(
   username: String,
   sock: Arc<UdpSocket>,
 ) {
-  let notification = Notification::Offline(username);
+  let notification = Notification::Offline {
+    timestamp: OffsetDateTime::now_utc(),
+    username,
+  };
   let mut buf = vec![0u8, 2];
   state.coder.serialize_into(&mut buf, &notification).unwrap(); // TODO: log error
 

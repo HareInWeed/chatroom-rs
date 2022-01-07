@@ -68,8 +68,14 @@ pub type Response = Result<ResponseData, ErrorCode>;
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[non_exhaustive]
 pub enum Notification {
-  Offline(String),
-  Online(UserInfo),
+  Offline {
+    timestamp: OffsetDateTime,
+    username: String,
+  },
+  Online {
+    timestamp: OffsetDateTime,
+    user_info: UserInfo,
+  },
 }
 
 #[derive(Error, Clone, Debug, PartialEq, Deserialize, Serialize)]

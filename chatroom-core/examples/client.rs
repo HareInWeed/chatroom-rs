@@ -134,10 +134,10 @@ async fn main() -> Result<(), Error> {
             if source == server_addr {
               // from server
               match coder.deserialize::<Notification>(&buf[..]) {
-                Ok(Notification::Offline(name)) => {
-                  eprintln!("[[internal]] offline message");
-                  let time = OffsetDateTime::now_utc();
-
+                Ok(Notification::Offline {
+                  timestamp: time,
+                  username: name,
+                }) => {
                   let addr = match state.users.read().get(&name) {
                     Some(s) => s.ip_address,
                     None => continue,
@@ -160,8 +160,10 @@ async fn main() -> Result<(), Error> {
                     .or_default()
                     .insert(time, ChatEntry::Offline);
                 }
-                Ok(Notification::Online(user)) => {
-                  let time = OffsetDateTime::now_utc();
+                Ok(Notification::Online {
+                  timestamp: time,
+                  user_info: user,
+                }) => {
                   let addr = user.ip_address;
                   let name = user.name.clone();
 
