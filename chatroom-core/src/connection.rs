@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, net::SocketAddr, result::Result, sync::Arc, time::Duration};
+use std::{
+  collections::BTreeMap,
+  net::SocketAddr,
+  result::Result,
+  sync::{atomic, Arc},
+  time::Duration,
+};
 
 use thiserror::Error as ThisError;
 
@@ -10,29 +16,37 @@ use serde::{Deserialize, Serialize};
 
 use bincode::Options;
 
+use byteorder::{ByteOrder, NetworkEndian};
+
+#[derive(Debug)]
 pub struct Connection<Coder>
 where
   Coder: Options + Copy,
 {
-  // TODO: eliminate clone of the buffer
-  pending_works: Arc<Mutex<BTreeMap<SocketAddr, sync::oneshot::Sender<Vec<u8>>>>>,
+  // TODO: use a flatten BtreeMap
+  pending_works: Arc<Mutex<BTreeMap<SocketAddr, BTreeMap<u16, sync::oneshot::Sender<Vec<u8>>>>>>,
+  counters: Arc<Mutex<BTreeMap<SocketAddr, atomic::AtomicU16>>>,
   sock: Arc<UdpSocket>,
   listener: task::JoinHandle<()>,
   coder: Coder,
-  receiver: Arc<Mutex<sync::mpsc::Receiver<Vec<u8>>>>,
   timeout: Duration,
   retry_limits: u32,
 }
 
 impl<Coder: 'static + Options + Copy + Send> Connection<Coder> {
-  pub fn new(sock: UdpSocket, coder: Coder, timeout: Duration, retry_limits: u32) -> Self {
+  pub fn new(
+    sock: UdpSocket,
+    coder: Coder,
+    timeout: Duration,
+    retry_limits: u32,
+  ) -> (Self, sync::mpsc::Receiver<(Vec<u8>, SocketAddr)>) {
     let sock = Arc::new(sock);
     let pending_works = Arc::new(Mutex::new(BTreeMap::<
       SocketAddr,
-      sync::oneshot::Sender<Vec<u8>>,
+      BTreeMap<u16, sync::oneshot::Sender<Vec<u8>>>,
     >::new()));
 
-    let (sender, receiver) = sync::mpsc::channel::<Vec<u8>>(100);
+    let (sender, receiver) = sync::mpsc::channel::<(Vec<u8>, SocketAddr)>(100);
 
     let listener = tokio::spawn({
       let sock = sock.clone();
@@ -44,30 +58,38 @@ impl<Coder: 'static + Options + Copy + Send> Connection<Coder> {
             Ok(r) => r,
             Err(_) => continue, // TODO: log error
           };
-          let data = buf[..len].to_vec();
-          let work = pending_works.lock().remove(&addr);
-          if let Some(sender) = work {
-            if let Err(_) = sender.send(data) {
-              continue; // TODO: log error
+          let id = NetworkEndian::read_u16(&buf[..]);
+          let data = buf[2..len].to_vec();
+          if id != 0 {
+            let mut pending_works = pending_works.lock();
+            if let Some(pending_works) = pending_works.get_mut(&addr) {
+              if let Some(sender) = pending_works.remove(&id) {
+                if let Err(_) = sender.send(data) {
+                  // TODO: log error
+                }
+                continue;
+              }
             }
-          } else {
-            if let Err(_) = sender.send(data).await {
-              continue; // TODO: log error
-            }
+          }
+          if let Err(_) = sender.send((data, addr)).await {
+            // TODO: log error
           }
         }
       }
     });
 
-    Self {
-      pending_works,
-      listener,
-      sock,
-      coder,
-      timeout,
-      retry_limits,
-      receiver: Arc::new(Mutex::new(receiver)),
-    }
+    (
+      Self {
+        pending_works,
+        listener,
+        sock,
+        coder,
+        timeout,
+        retry_limits,
+        counters: Default::default(),
+      },
+      receiver,
+    )
   }
 
   pub async fn request<Req, Res>(&self, req: &Req, addr: SocketAddr) -> Result<Res, Error>
@@ -75,15 +97,24 @@ impl<Coder: 'static + Options + Copy + Send> Connection<Coder> {
     Req: Serialize,
     Res: for<'de> Deserialize<'de>,
   {
-    let buf = self.coder.serialize(req)?;
+    let mut buf = vec![0u8, 2];
+    let id = self.get_unique_id(addr);
+    NetworkEndian::write_u16(&mut buf[..], id);
 
-    let mut counter = self.retry_limits;
+    self.coder.serialize_into(&mut buf, req)?;
+
+    let mut retry_counter = self.retry_limits;
 
     loop {
       self.sock.send_to(&buf, addr).await?;
 
       let (tx, rx) = sync::oneshot::channel::<Vec<u8>>();
-      self.pending_works.lock().insert(addr.clone(), tx);
+      self
+        .pending_works
+        .lock()
+        .entry(addr)
+        .or_insert(Default::default())
+        .insert(id, tx);
 
       match time::timeout(self.timeout, rx).await {
         Ok(buf) => {
@@ -91,9 +122,9 @@ impl<Coder: 'static + Options + Copy + Send> Connection<Coder> {
           return Ok(self.coder.deserialize::<Res>(&buf)?);
         }
         Err(err) => {
-          counter -= 1;
+          retry_counter -= 1;
           self.pending_works.lock().remove(&addr);
-          if counter == 0 {
+          if retry_counter == 0 {
             return Err(err.into());
           }
         }
@@ -101,23 +132,43 @@ impl<Coder: 'static + Options + Copy + Send> Connection<Coder> {
     }
   }
 
-  pub async fn send<T>(&self, data: &T) -> Result<usize, Error>
+  pub fn get_unique_id(&self, addr: SocketAddr) -> u16 {
+    let mut counters = self.counters.lock();
+    counters
+      .entry(addr)
+      .or_insert_with(|| atomic::AtomicU16::new(1))
+      .fetch_add(1, atomic::Ordering::SeqCst)
+  }
+
+  pub fn release(&self, addr: SocketAddr) -> bool {
+    let mut counters = self.counters.lock();
+    if counters.remove(&addr).is_some() {
+      self.pending_works.lock().remove(&addr);
+      true
+    } else {
+      false
+    }
+  }
+
+  pub async fn send_to_raw(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, Error> {
+    Ok(self.sock.send_to(buf, addr).await?)
+  }
+
+  pub async fn send_to<T>(&self, data: &T, addr: SocketAddr) -> Result<usize, Error>
   where
     T: Serialize,
   {
     let buf = self.coder.serialize(data)?;
-    Ok(self.sock.send(&buf).await?)
+    Ok(self.sock.send_to(&buf, addr).await?)
   }
 
-  pub async fn recv<T>(&self) -> Result<T, Error>
+  pub async fn send_to_with_meta<T>(&self, data: &T, addr: SocketAddr) -> Result<usize, Error>
   where
-    T: for<'de> Deserialize<'de>,
+    T: Serialize,
   {
-    if let Some(data) = self.receiver.lock().recv().await {
-      Ok(self.coder.deserialize::<T>(&data)?)
-    } else {
-      Err(Error::MpscClosed)
-    }
+    let mut buf = vec![0u8; 2];
+    self.coder.serialize_into(&mut buf, data)?;
+    Ok(self.sock.send_to(&buf, addr).await?)
   }
 }
 

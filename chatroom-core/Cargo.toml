@@ -18,21 +18,24 @@ tokio = { version = "1.14.0", default-features = false, features = [
     "time",
     "sync",
 ] }
+futures = "0.3"
+parking_lot = "0.11"
 serde = { version = "1", features = ["derive"] }
-time = { version = "0.3", features = ["serde-human-readable"] }
+time = { version = "0.3" }
 bincode = "1"
+byteorder = "1"
 
+[dev-dependencies]
+clap = { version = "3", features = ["derive"] }
 rand = "0.8"
 sha2 = "0.10"
 rust-argon2 = "0.8"
-futures = "0.3"
 
-clap = { version = "3", features = ["derive"] }
-parking_lot = "0.11"
-
-
-[[bin]]
+[[example]]
 name = "client"
 
-[[bin]]
+[[example]]
+name = "test_client"
+
+[[example]]
 name = "server"

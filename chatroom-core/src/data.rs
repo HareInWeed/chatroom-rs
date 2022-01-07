@@ -68,7 +68,7 @@ pub type Response = Result<ResponseData, ErrorCode>;
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[non_exhaustive]
 pub enum Notification {
-  Offline(SocketAddr),
+  Offline(String),
   Online(UserInfo),
 }
 
@@ -91,9 +91,9 @@ pub enum ErrorCode {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Message {
-  to_all: bool,
-  timestamp: OffsetDateTime,
-  msg: String,
+  pub to_all: bool,
+  pub timestamp: OffsetDateTime,
+  pub msg: String,
 }
 
 pub fn default_coder() -> config::WithOtherEndian<
