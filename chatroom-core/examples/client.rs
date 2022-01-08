@@ -8,7 +8,6 @@ use std::{
 };
 
 use bincode::Options;
-use futures::future::join_all;
 use parking_lot::{Mutex, RwLock};
 use tokio::{net::UdpSocket, task::JoinHandle};
 
@@ -18,6 +17,7 @@ use chatroom_core::{
   connection::Connection,
   data::{
     default_coder, Command, ErrorCode, Message, Notification, Response, ResponseData, UserInfo,
+    UserOnlineInfo,
   },
   utils::Error,
 };
@@ -134,43 +134,27 @@ async fn main() -> Result<(), Error> {
             if source == server_addr {
               // from server
               match coder.deserialize::<Notification>(&buf[..]) {
-                Ok(Notification::Offline {
-                  timestamp: time,
-                  username: name,
-                }) => {
-                  let addr = match state.users.read().get(&name) {
-                    Some(s) => s.ip_address,
-                    None => continue,
-                  };
-
-                  if let None = state.addr2user.write().remove(&addr) {
-                    continue;
-                  }
-
-                  println!("[{}: is offline]", name);
-                  state.users.write().get_mut(&name).unwrap().is_online = false;
-                  state
-                    .group_history
-                    .write()
-                    .insert(time, OwnedChatEntry::new(name.clone(), ChatEntry::Offline));
-                  state
-                    .ono2one_history
-                    .write()
-                    .entry(name)
-                    .or_default()
-                    .insert(time, ChatEntry::Offline);
-                }
                 Ok(Notification::Online {
                   timestamp: time,
-                  user_info: user,
+                  name,
+                  info,
                 }) => {
-                  let addr = user.ip_address;
-                  let name = user.name.clone();
-
-                  println!("[{}: is online]", name);
-
-                  state.addr2user.write().insert(addr, name.clone());
-                  state.users.write().insert(name.clone(), user);
+                  println!("[{}: is online]", &name);
+                  state
+                    .addr2user
+                    .write()
+                    .insert(info.ip_address, name.clone());
+                  // TODO: well, this won't handle new registered user really well
+                  // if future online unrelated info are included in user info
+                  state
+                    .users
+                    .write()
+                    .entry(name.clone())
+                    .or_insert_with(|| UserInfo {
+                      name: name.clone(),
+                      online_info: None,
+                    })
+                    .online_info = Some(info);
                   state
                     .group_history
                     .write()
@@ -181,6 +165,38 @@ async fn main() -> Result<(), Error> {
                     .entry(name)
                     .or_default()
                     .insert(time, ChatEntry::Online);
+                }
+                Ok(Notification::Offline {
+                  timestamp: time,
+                  name,
+                }) => {
+                  let online_info = match state.users.write().get_mut(&name) {
+                    Some(user) => user.online_info.take(),
+                    _ => continue,
+                  };
+
+                  let online_info = match online_info {
+                    Some(s) => s,
+                    None => continue,
+                  };
+
+                  if let None = state.addr2user.write().remove(&online_info.ip_address) {
+                    continue;
+                  }
+
+                  println!("[{}: is offline]", name);
+
+                  state
+                    .group_history
+                    .write()
+                    .insert(time, OwnedChatEntry::new(name.clone(), ChatEntry::Offline));
+
+                  state
+                    .ono2one_history
+                    .write()
+                    .entry(name)
+                    .or_default()
+                    .insert(time, ChatEntry::Offline);
                 }
                 Ok(_) => {
                   // log error
@@ -294,7 +310,7 @@ async fn main() -> Result<(), Error> {
                     loop {
                       interval.tick().await;
                       if let Err(_) = connection
-                        .send_to_with_meta(&Command::Heartbeat, server_addr)
+                        .send_to_with_empty_meta(&Command::Heartbeat, server_addr)
                         .await
                       {
                         // TODO: log error
@@ -306,20 +322,32 @@ async fn main() -> Result<(), Error> {
                 *state.addr2user.write() = users
                   .iter()
                   .filter_map(|u| {
-                    if u.is_online {
-                      Some((u.ip_address.clone(), u.name.clone()))
+                    if let UserInfo {
+                      online_info: Some(UserOnlineInfo { ip_address, .. }),
+                      name,
+                      ..
+                    } = u
+                    {
+                      Some((ip_address.clone(), name.clone()))
                     } else {
                       None
                     }
                   })
                   .collect();
                 *state.users.write() = users.into_iter().map(|u| (u.name.clone(), u)).collect();
-                let my_addr = state
-                  .users
-                  .read()
-                  .get(name)
-                  .map(|u| u.ip_address.clone())
-                  .unwrap(); // TODO: log error
+
+                let my_addr = {
+                  let users = state.users.read();
+                  // TODO: log error
+                  users
+                    .get(name)
+                    .unwrap()
+                    .online_info
+                    .as_ref()
+                    .unwrap()
+                    .ip_address
+                };
+
                 *state.personal_info.lock() = Some(PersonalInfo {
                   name: name.into(),
                   ip_address: my_addr,
@@ -366,16 +394,13 @@ async fn main() -> Result<(), Error> {
         }
         "SAY_TO" => {
           if let Some((username, msg)) = args.split_once(' ') {
-            if let Some(UserInfo {
-              name,
-              ip_address,
-              is_online,
-            }) = state.users.read().get(username).cloned()
+            // TODO: eliminate the clone here
+            if let Some(UserInfo { name, online_info }) = state.users.read().get(username).cloned()
             {
-              if is_online {
+              if let Some(UserOnlineInfo { ip_address, .. }) = online_info {
                 let timestamp = OffsetDateTime::now_utc();
                 connection
-                  .send_to_with_meta(
+                  .send_to_with_empty_meta(
                     &Message {
                       to_all: false,
                       timestamp,
@@ -423,16 +448,20 @@ async fn main() -> Result<(), Error> {
 
           let addrs = (state.users.read())
             .values()
-            .filter_map(|user| {
-              if user.ip_address != my_addr {
-                Some(user.ip_address)
+            .filter_map(|u| {
+              if let Some(UserOnlineInfo { ip_address, .. }) = u.online_info {
+                if my_addr != ip_address {
+                  Some(ip_address)
+                } else {
+                  None
+                }
               } else {
                 None
               }
             })
             .collect::<Vec<_>>();
           if let Err(_) = connection
-            .send_to_multiple_with_meta(
+            .send_to_multiple_with_empty_meta(
               &Message {
                 to_all: true,
                 timestamp: OffsetDateTime::now_utc(),
@@ -459,20 +488,20 @@ async fn main() -> Result<(), Error> {
           {
             Ok(ResponseData::ChatroomStatus { users }) => {
               for user in users.iter() {
-                if user.is_online {
+                if user.online_info.is_some() {
                   println!("[[server]] \"{}\" is online", &user.name);
                 }
               }
               for user in users.iter() {
-                if !user.is_online {
+                if user.online_info.is_none() {
                   println!("[[server]] \"{}\" is offline", &user.name);
                 }
               }
               *state.addr2user.write() = users
                 .iter()
                 .filter_map(|u| {
-                  if u.is_online {
-                    Some((u.ip_address.clone(), u.name.clone()))
+                  if let Some(UserOnlineInfo { ip_address, .. }) = u.online_info {
+                    Some((ip_address, u.name.clone()))
                   } else {
                     None
                   }
@@ -482,7 +511,7 @@ async fn main() -> Result<(), Error> {
                 .users
                 .read()
                 .get(&state.personal_info.lock().as_ref().unwrap().name)
-                .map(|u| u.ip_address.clone())
+                .map(|u| u.online_info.as_ref().unwrap().ip_address) // TODO: log error
                 .unwrap(); // TODO: log error
               state.personal_info.lock().as_mut().unwrap().ip_address = my_addr;
               *state.users.write() = users.into_iter().map(|u| (u.name.clone(), u)).collect();

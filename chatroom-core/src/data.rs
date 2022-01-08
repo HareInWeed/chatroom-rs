@@ -12,29 +12,36 @@ use bincode::{config, DefaultOptions, Error as BinCodeError, Options};
 use byteorder::{ByteOrder, NetworkEndian};
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub enum SecureMsg {
+  Key([u8; 32]),
+  Msg(Vec<u8>),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct User {
   pub name: String,
   pub password_hash: String,
+  pub online_info: Option<UserOnlineInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct UserOnlineInfo {
   pub ip_address: SocketAddr,
+  pub pub_key: [u8; 32],
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct UserInfo {
   pub name: String,
-  pub ip_address: SocketAddr,
-  pub is_online: bool,
+  pub online_info: Option<UserOnlineInfo>,
 }
 
 impl UserInfo {
-  pub fn new(user: &User, is_online: bool) -> Self {
+  pub fn new(user: &User) -> Self {
     let User {
-      name, ip_address, ..
+      name, online_info, ..
     } = user.clone();
-    Self {
-      name,
-      ip_address,
-      is_online,
-    }
+    Self { name, online_info }
   }
 }
 
@@ -70,13 +77,14 @@ pub type Response = Result<ResponseData, ErrorCode>;
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[non_exhaustive]
 pub enum Notification {
-  Offline {
-    timestamp: OffsetDateTime,
-    username: String,
-  },
   Online {
     timestamp: OffsetDateTime,
-    user_info: UserInfo,
+    name: String,
+    info: UserOnlineInfo,
+  },
+  Offline {
+    timestamp: OffsetDateTime,
+    name: String,
   },
 }
 

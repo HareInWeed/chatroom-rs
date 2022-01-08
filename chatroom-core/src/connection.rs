@@ -1,5 +1,5 @@
 use std::{
-  collections::BTreeMap,
+  collections::{BTreeMap, HashMap},
   net::SocketAddr,
   result::Result,
   sync::{atomic, Arc},
@@ -10,7 +10,7 @@ use thiserror::Error as ThisError;
 
 use tokio::{net::UdpSocket, sync, task, time};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,39 +20,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use futures::future::try_join_all;
 
-use crate::data::serialize_with_meta;
-
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-struct MetaData {
-  id: u16,
-}
-
-impl Default for MetaData {
-  fn default() -> Self {
-    Self { id: 0 }
-  }
-}
-
-impl From<u16> for MetaData {
-  fn from(id: u16) -> Self {
-    Self { id }
-  }
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-struct TaggedData<T> {
-  metadata: MetaData,
-  data: T,
-}
-
-impl<T> From<T> for TaggedData<T> {
-  fn from(data: T) -> Self {
-    Self {
-      metadata: Default::default(),
-      data,
-    }
-  }
-}
+use crate::data::{serialize_with_meta, SecureMsg};
 
 #[derive(Debug)]
 pub struct RawConnection<Coder>
@@ -61,11 +29,20 @@ where
 {
   sock: UdpSocket,
   coder: Coder,
+  // pub_keys: Arc<RwLock<HashMap<SocketAddr, PublicKey>>>,
 }
 
 impl<Coder: 'static + Options + Copy + Send> RawConnection<Coder> {
-  pub fn new(sock: UdpSocket, coder: Coder) -> Self {
-    Self { sock, coder }
+  pub fn new(
+    sock: UdpSocket,
+    coder: Coder,
+    // pub_keys: Arc<RwLock<HashMap<SocketAddr, PublicKey>>>,
+  ) -> Self {
+    Self {
+      sock,
+      coder,
+      // pub_keys,
+    }
   }
 
   #[inline(always)]
@@ -79,7 +56,7 @@ impl<Coder: 'static + Options + Copy + Send> RawConnection<Coder> {
   }
 
   #[inline(always)]
-  pub async fn sent_to_raw(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, Error> {
+  pub async fn send_to_raw(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, Error> {
     Ok(self.sock.send_to(buf, addr).await?)
   }
 
@@ -161,35 +138,34 @@ where
   // TODO: use a flatten BtreeMap
   pending_works: Arc<Mutex<BTreeMap<SocketAddr, BTreeMap<u16, sync::oneshot::Sender<Vec<u8>>>>>>,
   counters: Arc<Mutex<BTreeMap<SocketAddr, atomic::AtomicU16>>>,
-  sock: Arc<UdpSocket>,
+  connection: Arc<RawConnection<Coder>>,
   listener: task::JoinHandle<()>,
-  coder: Coder,
   timeout: Duration,
   retry_limits: u32,
 }
 
-impl<Coder: 'static + Options + Copy + Send> Connection<Coder> {
+impl<Coder: 'static + Options + Copy + Send + Sync> Connection<Coder> {
   pub fn new(
     sock: UdpSocket,
     coder: Coder,
     timeout: Duration,
     retry_limits: u32,
   ) -> (Self, sync::mpsc::Receiver<(Vec<u8>, SocketAddr)>) {
-    let sock = Arc::new(sock);
     let pending_works = Arc::new(Mutex::new(BTreeMap::<
       SocketAddr,
       BTreeMap<u16, sync::oneshot::Sender<Vec<u8>>>,
     >::new()));
+    let connection = Arc::new(RawConnection::new(sock, coder));
 
     let (sender, receiver) = sync::mpsc::channel::<(Vec<u8>, SocketAddr)>(100);
 
     let listener = tokio::spawn({
-      let sock = sock.clone();
+      let connection = connection.clone();
       let pending_works = pending_works.clone();
       async move {
         let mut buf = vec![0; 65535];
         loop {
-          let (len, addr) = match sock.recv_from(&mut buf).await {
+          let (len, addr) = match connection.recv_from_raw(&mut buf).await {
             Ok(r) => r,
             Err(_) => continue, // TODO: log error
           };
@@ -217,8 +193,7 @@ impl<Coder: 'static + Options + Copy + Send> Connection<Coder> {
       Self {
         pending_works,
         listener,
-        sock,
-        coder,
+        connection,
         timeout,
         retry_limits,
         counters: Default::default(),
@@ -236,12 +211,12 @@ impl<Coder: 'static + Options + Copy + Send> Connection<Coder> {
     let id = self.get_unique_id(addr);
     NetworkEndian::write_u16(&mut buf[..], id);
 
-    self.coder.serialize_into(&mut buf, req)?;
+    self.connection.get_coder().serialize_into(&mut buf, req)?;
 
     let mut retry_counter = self.retry_limits;
 
     loop {
-      self.sock.send_to(&buf, addr).await?;
+      self.connection.send_to_raw(&buf, addr).await?;
 
       let (tx, rx) = sync::oneshot::channel::<Vec<u8>>();
       self
@@ -254,7 +229,7 @@ impl<Coder: 'static + Options + Copy + Send> Connection<Coder> {
       match time::timeout(self.timeout, rx).await {
         Ok(buf) => {
           let buf = buf?;
-          return Ok(self.coder.deserialize::<Res>(&buf)?);
+          return Ok(self.connection.get_coder().deserialize::<Res>(&buf)?);
         }
         Err(err) => {
           retry_counter -= 1;
@@ -285,7 +260,8 @@ impl<Coder: 'static + Options + Copy + Send> Connection<Coder> {
     }
   }
 
-  pub async fn send_to_multiple_with_meta<T, I>(
+  #[inline(always)]
+  pub async fn send_to_multiple_with_empty_meta<T, I>(
     &self,
     data: &T,
     addrs: I,
@@ -294,27 +270,26 @@ impl<Coder: 'static + Options + Copy + Send> Connection<Coder> {
     T: Serialize,
     I: Iterator<Item = SocketAddr>,
   {
-    let mut buf = vec![0u8; 2];
-    self.coder.serialize_into(&mut buf, data)?;
-
-    Ok(try_join_all(addrs.map(|addr| self.sock.send_to(&buf, addr))).await?)
+    self
+      .connection
+      .send_to_multiple_with_empty_meta(data, addrs)
+      .await
   }
 
+  #[inline(always)]
   pub async fn send_to<T>(&self, data: &T, addr: SocketAddr) -> Result<usize, Error>
   where
     T: Serialize,
   {
-    let buf = self.coder.serialize(data)?;
-    Ok(self.sock.send_to(&buf, addr).await?)
+    self.connection.send_to(data, addr).await
   }
 
-  pub async fn send_to_with_meta<T>(&self, data: &T, addr: SocketAddr) -> Result<usize, Error>
+  #[inline(always)]
+  pub async fn send_to_with_empty_meta<T>(&self, data: &T, addr: SocketAddr) -> Result<usize, Error>
   where
     T: Serialize,
   {
-    let mut buf = vec![0u8; 2];
-    self.coder.serialize_into(&mut buf, data)?;
-    Ok(self.sock.send_to(&buf, addr).await?)
+    self.connection.send_to_with_empty_meta(data, addr).await
   }
 }
 

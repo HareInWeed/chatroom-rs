@@ -130,7 +130,9 @@ async fn main() -> Result<(), Error> {
     if let Some(command) = command {
       match command {
         command @ Command::Heartbeat => {
-          connection.send_to_with_meta(&command, server_addr).await?;
+          connection
+            .send_to_with_empty_meta(&command, server_addr)
+            .await?;
           println!("[client] command sent");
         }
         command => {
