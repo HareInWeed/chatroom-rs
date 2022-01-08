@@ -24,6 +24,7 @@ serde = { version = "1", features = ["derive"] }
 time = { version = "0.3", features = ["serde-human-readable"] }
 bincode = "1"
 byteorder = "1"
+crypto_box = "0.7"
 
 [dev-dependencies]
 clap = { version = "3", features = ["derive"] }

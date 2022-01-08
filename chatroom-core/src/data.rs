@@ -2,12 +2,14 @@ use time::OffsetDateTime;
 
 use std::net::SocketAddr;
 
-use thiserror::Error;
+use thiserror::Error as ThisError;
 
 use serde::{Deserialize, Serialize};
 
 #[allow(deprecated)]
-use bincode::{config, DefaultOptions, Options};
+use bincode::{config, DefaultOptions, Error as BinCodeError, Options};
+
+use byteorder::{ByteOrder, NetworkEndian};
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct User {
@@ -78,7 +80,7 @@ pub enum Notification {
   },
 }
 
-#[derive(Error, Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[derive(ThisError, Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[non_exhaustive]
 pub enum ErrorCode {
   // register
@@ -113,4 +115,15 @@ pub fn default_coder() -> config::WithOtherEndian<
     .with_fixint_encoding()
     .allow_trailing_bytes()
     .with_big_endian()
+}
+
+pub fn serialize_with_meta<C, T>(coder: C, data: &T, id: u16) -> Result<Vec<u8>, BinCodeError>
+where
+  C: Options,
+  T: Serialize,
+{
+  let mut buf = vec![0u8; 2];
+  NetworkEndian::write_u16(&mut buf[..], id);
+  coder.serialize_into(&mut buf, data)?;
+  Ok(buf)
 }

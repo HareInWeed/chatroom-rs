@@ -421,25 +421,29 @@ async fn main() -> Result<(), Error> {
             OwnedChatEntry::new(my_name, ChatEntry::Message(msg.into())),
           );
 
-          let msg = Message {
-            to_all: true,
-            timestamp: OffsetDateTime::now_utc(),
-            msg: msg.into(),
-          };
-
-          let mut buf = vec![0u8; 2];
-          coder.serialize_into(&mut buf, &msg)?;
-          let futures = (state.users.read())
+          let addrs = (state.users.read())
             .values()
             .filter_map(|user| {
               if user.ip_address != my_addr {
-                Some(connection.send_to_raw(&buf, user.ip_address))
+                Some(user.ip_address)
               } else {
                 None
               }
             })
             .collect::<Vec<_>>();
-          join_all(futures).await;
+          if let Err(_) = connection
+            .send_to_multiple_with_meta(
+              &Message {
+                to_all: true,
+                timestamp: OffsetDateTime::now_utc(),
+                msg: msg.into(),
+              },
+              addrs.into_iter(),
+            )
+            .await
+          {
+            // TODO: log error
+          }
         }
         _ => {
           eprintln!("[[client]] Invalid command");

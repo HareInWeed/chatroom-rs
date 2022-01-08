@@ -18,6 +18,141 @@ use bincode::Options;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
+use futures::future::try_join_all;
+
+use crate::data::serialize_with_meta;
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+struct MetaData {
+  id: u16,
+}
+
+impl Default for MetaData {
+  fn default() -> Self {
+    Self { id: 0 }
+  }
+}
+
+impl From<u16> for MetaData {
+  fn from(id: u16) -> Self {
+    Self { id }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+struct TaggedData<T> {
+  metadata: MetaData,
+  data: T,
+}
+
+impl<T> From<T> for TaggedData<T> {
+  fn from(data: T) -> Self {
+    Self {
+      metadata: Default::default(),
+      data,
+    }
+  }
+}
+
+#[derive(Debug)]
+pub struct RawConnection<Coder>
+where
+  Coder: Options + Copy,
+{
+  sock: UdpSocket,
+  coder: Coder,
+}
+
+impl<Coder: 'static + Options + Copy + Send> RawConnection<Coder> {
+  pub fn new(sock: UdpSocket, coder: Coder) -> Self {
+    Self { sock, coder }
+  }
+
+  #[inline(always)]
+  pub fn get_coder(&self) -> Coder {
+    self.coder
+  }
+
+  #[inline(always)]
+  pub async fn recv_from_raw(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), Error> {
+    Ok(self.sock.recv_from(buf).await?)
+  }
+
+  #[inline(always)]
+  pub async fn sent_to_raw(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, Error> {
+    Ok(self.sock.send_to(buf, addr).await?)
+  }
+
+  pub async fn recv_from<T>(&self, buf: &mut [u8]) -> Result<(T, SocketAddr), Error>
+  where
+    T: for<'de> Deserialize<'de>,
+  {
+    let (len, addr) = self.sock.recv_from(buf).await?;
+    Ok((self.coder.deserialize(&buf[..len])?, addr))
+  }
+
+  pub async fn send_to_multiple_with_meta<T, I>(
+    &self,
+    data: &T,
+    addrs: I,
+    id: u16,
+  ) -> Result<Vec<usize>, Error>
+  where
+    T: Serialize,
+    I: Iterator<Item = SocketAddr>,
+  {
+    let buf = serialize_with_meta(self.coder, data, id)?;
+    Ok(try_join_all(addrs.map(|addr| self.sock.send_to(&buf, addr))).await?)
+  }
+
+  pub async fn send_to_multiple_with_empty_meta<T, I>(
+    &self,
+    data: &T,
+    addrs: I,
+  ) -> Result<Vec<usize>, Error>
+  where
+    T: Serialize,
+    I: Iterator<Item = SocketAddr>,
+  {
+    let mut buf = vec![0u8; 2];
+    self.coder.serialize_into(&mut buf, data)?;
+
+    Ok(try_join_all(addrs.map(|addr| self.sock.send_to(&buf, addr))).await?)
+  }
+
+  pub async fn send_to<T>(&self, data: &T, addr: SocketAddr) -> Result<usize, Error>
+  where
+    T: Serialize,
+  {
+    let buf = self.coder.serialize(data)?;
+    Ok(self.sock.send_to(&buf, addr).await?)
+  }
+
+  pub async fn send_to_with_meta<T>(
+    &self,
+    data: &T,
+    addr: SocketAddr,
+    id: u16,
+  ) -> Result<usize, Error>
+  where
+    T: Serialize,
+  {
+    let mut buf = vec![0u8; 2];
+    NetworkEndian::write_u16(&mut buf[..], id);
+    self.coder.serialize_into(&mut buf, data)?;
+    Ok(self.sock.send_to(&buf, addr).await?)
+  }
+
+  pub async fn send_to_with_empty_meta<T>(&self, data: &T, addr: SocketAddr) -> Result<usize, Error>
+  where
+    T: Serialize,
+  {
+    let mut buf = vec![0u8; 2];
+    self.coder.serialize_into(&mut buf, data)?;
+    Ok(self.sock.send_to(&buf, addr).await?)
+  }
+}
+
 #[derive(Debug)]
 pub struct Connection<Coder>
 where
@@ -150,8 +285,19 @@ impl<Coder: 'static + Options + Copy + Send> Connection<Coder> {
     }
   }
 
-  pub async fn send_to_raw(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, Error> {
-    Ok(self.sock.send_to(buf, addr).await?)
+  pub async fn send_to_multiple_with_meta<T, I>(
+    &self,
+    data: &T,
+    addrs: I,
+  ) -> Result<Vec<usize>, Error>
+  where
+    T: Serialize,
+    I: Iterator<Item = SocketAddr>,
+  {
+    let mut buf = vec![0u8; 2];
+    self.coder.serialize_into(&mut buf, data)?;
+
+    Ok(try_join_all(addrs.map(|addr| self.sock.send_to(&buf, addr))).await?)
   }
 
   pub async fn send_to<T>(&self, data: &T, addr: SocketAddr) -> Result<usize, Error>
