@@ -1,0 +1,38 @@
+[package]
+name = "chatroom-server"
+version = "0.1.0"
+description = "UDP based chatroom server built with tauri"
+authors = ["HareInWeed"]
+license = "MIT"
+repository = "https://github.com/HareInWeed/chatroom-rs"
+edition = "2018"
+build = "src/build.rs"
+
+[build-dependencies]
+tauri-build = { version = "1.0.0-beta.4" }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "1.0.0-beta.8", features = ["api-all"] }
+tokio = { version = "1.14.0", default-features = false, features = [
+    "macros",
+    "rt-multi-thread",
+    "net",
+    "time",
+    "sync",
+] }
+futures = "0.3"
+parking_lot = "0.11"
+time = { version = "0.3", features = ["serde-human-readable", "local-offset"] }
+bincode = "1"
+byteorder = "1"
+crypto_box = "0.7"
+rand = "0.8"
+sha2 = "0.10"
+rust-argon2 = "0.8"
+chatroom-core = { path = "../../chatroom-core" }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

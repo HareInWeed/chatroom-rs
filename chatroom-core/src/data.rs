@@ -25,6 +25,30 @@ pub struct User {
   pub online_info: Option<UserOnlineInfo>,
 }
 
+impl From<(String, UserEssential)> for User {
+  fn from(data: (String, UserEssential)) -> Self {
+    let (name, UserEssential { password_hash }) = data;
+    Self {
+      name,
+      password_hash,
+      online_info: None,
+    }
+  }
+}
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct UserEssential {
+  pub password_hash: String,
+}
+
+impl From<&User> for UserEssential {
+  fn from(data: &User) -> Self {
+    let User { password_hash, .. } = data;
+    Self {
+      password_hash: password_hash.clone(),
+    }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct UserOnlineInfo {
   pub ip_address: SocketAddr,
@@ -116,13 +140,15 @@ pub struct Message {
   pub msg: String,
 }
 
-pub fn default_coder() -> config::WithOtherEndian<
+pub type DefaultCoder = config::WithOtherEndian<
   config::WithOtherTrailing<
     config::WithOtherIntEncoding<config::DefaultOptions, config::FixintEncoding>,
     config::AllowTrailing,
   >,
   config::BigEndian,
-> {
+>;
+
+pub fn default_coder() -> DefaultCoder {
   DefaultOptions::new()
     .with_fixint_encoding()
     .allow_trailing_bytes()

@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "chatroom-core",
+    "chatroom-server/src-tauri",
+    "chatroom-client/src-tauri",
+]

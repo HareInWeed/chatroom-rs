@@ -4,6 +4,8 @@ use std::{fmt::Display, future::Future, time::Duration};
 
 use bincode;
 
+use serde::{Deserialize, Serialize};
+
 pub struct SeqDisplay<'a, T: Display>(pub &'a [T]);
 
 impl<'a, T: Display> Display for SeqDisplay<'a, T> {
@@ -45,4 +47,19 @@ pub enum Error {
   CorruptedData(#[from] bincode::Error),
   #[error(transparent)]
   Connection(#[from] crate::connection::Error),
+  #[error(transparent)]
+  InvalidSockAddr(#[from] std::net::AddrParseError),
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ErrorMsg {
+  msg: String,
+}
+
+impl<T: Display> From<T> for ErrorMsg {
+  fn from(err: T) -> Self {
+    Self {
+      msg: err.to_string(),
+    }
+  }
 }
