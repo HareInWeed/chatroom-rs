@@ -1,13 +1,10 @@
-use std::{
-  collections::HashMap, net::SocketAddr, result::Result, slice::SliceIndex, sync::Arc,
-  time::Duration,
-};
+use std::{collections::HashMap, net::SocketAddr, result::Result, sync::Arc, time::Duration};
 
 use time::OffsetDateTime;
 use tokio::{self, net::UdpSocket, task::JoinHandle};
 
 use chatroom_core::{
-  connection::RawConnection,
+  connection::SecureConnection,
   data::{
     default_coder, Command, ErrorCode, Notification, Response, ResponseData, User, UserInfo,
     UserOnlineInfo,
@@ -16,6 +13,7 @@ use chatroom_core::{
 };
 
 use argon2;
+
 use rand::Rng;
 
 use parking_lot::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
@@ -25,6 +23,8 @@ use bincode::Options;
 use clap::Parser;
 
 use byteorder::{ByteOrder, NetworkEndian};
+
+use crypto_box::PublicKey;
 
 /// Chatroom server
 #[derive(Parser, Debug)]
@@ -42,7 +42,7 @@ struct State {
   addr2user: RwHashMap<SocketAddr, String>,
   users: RwHashMap<String, User>,
   user_active_timers: RwHashMap<String, JoinHandle<()>>,
-  public_keys: RwHashMap<String, User>,
+  pub_keys: Arc<RwHashMap<SocketAddr, PublicKey>>,
   heartbeat_interval: Duration,
 }
 
@@ -52,7 +52,7 @@ impl State {
       addr2user: Default::default(),
       users: Default::default(),
       user_active_timers: Default::default(),
-      public_keys: Default::default(),
+      pub_keys: Default::default(),
       heartbeat_interval,
     }
   }
@@ -67,12 +67,32 @@ async fn main() -> Result<(), Error> {
   let sock = UdpSocket::bind(&args.addr).await?;
   println!("server running at {}", sock.local_addr()?);
 
-  let connection = Arc::new(RawConnection::new(sock, default_coder()));
+  let (connection, key_receiver) =
+    SecureConnection::new(sock, state.pub_keys.clone(), default_coder());
+  let connection = Arc::new(connection);
 
-  let mut buf = vec![0; 65535];
+  tokio::spawn({
+    let state = state.clone();
+    let mut key_receiver = key_receiver;
+    async move {
+      loop {
+        if let Some((key, addr)) = key_receiver.recv().await {
+          if let Some(name) = state.addr2user.read().get(&addr) {
+            if let Some(user) = state.users.write().get_mut(name) {
+              if let Some(info) = user.online_info.as_mut() {
+                info.pub_key = key.as_bytes().clone();
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  let mut buf = vec![0u8; 65535];
 
   loop {
-    let (len, addr) = match connection.recv_from_raw(&mut buf).await {
+    let (buf, addr) = match connection.recv_from_raw(&mut buf).await {
       Ok(req) => req,
       Err(err) => {
         eprintln!("{}", Error::from(err));
@@ -80,7 +100,6 @@ async fn main() -> Result<(), Error> {
       }
     };
 
-    let buf = buf[..len].to_vec();
     let connection = connection.clone();
     let state = state.clone();
     tokio::spawn(async move {
@@ -94,7 +113,7 @@ async fn main() -> Result<(), Error> {
 
 async fn process<Coder: 'static + Options + Copy + Send + Sync>(
   state: Arc<State>,
-  connection: Arc<RawConnection<Coder>>,
+  connection: Arc<SecureConnection<Coder>>,
   buf: Vec<u8>,
   addr: SocketAddr,
 ) -> Result<(), Error> {
@@ -141,9 +160,13 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
           break Err(ErrorCode::InvalidUserOrPass);
         }
 
+        let pub_key = match state.pub_keys.read().get(&addr) {
+          Some(pub_key) => pub_key.as_bytes().clone(),
+          _ => break Err(ErrorCode::ConnectionNotSecure),
+        };
+
         // update activity timer
-        let mut user_active_timers = state.user_active_timers.write();
-        let old_timer = user_active_timers.insert(username.clone(), {
+        let old_timer = state.user_active_timers.write().insert(username.clone(), {
           let state = state.clone();
           let sock = connection.clone();
           let username = username.clone();
@@ -152,7 +175,6 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
             announce_offline(state, username, sock).await;
           })
         });
-        let user_active_timers = RwLockWriteGuard::<_>::downgrade(user_active_timers);
 
         if let Some(old_timer) = old_timer {
           old_timer.abort();
@@ -172,9 +194,10 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
               state.addr2user.write().remove(&old_addr);
             }
           }
+
           let info = UserOnlineInfo {
             ip_address: addr,
-            pub_key: [0u8; 32], // TODO
+            pub_key,
           };
           user.online_info = Some(info.clone());
           info
@@ -303,17 +326,17 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
   };
 
   if let Some(response) = response {
-    default_timeout(connection.send_to_with_meta(&response, addr, id)).await??;
+    connection.send_to_with_meta(&response, addr, id).await?;
   }
 
   Ok(())
 }
 
-async fn announce_online<Coder: 'static + Options + Copy + Send>(
+async fn announce_online<Coder: 'static + Options + Copy + Send + Sync>(
   state: Arc<State>,
   name: String,
   info: UserOnlineInfo,
-  connection: Arc<RawConnection<Coder>>,
+  connection: Arc<SecureConnection<Coder>>,
 ) {
   let addrs = state
     .addr2user
@@ -335,10 +358,10 @@ async fn announce_online<Coder: 'static + Options + Copy + Send>(
   }
 }
 
-async fn announce_offline<Coder: 'static + Options + Copy + Send>(
+async fn announce_offline<Coder: 'static + Options + Copy + Send + Sync>(
   state: Arc<State>,
   name: String,
-  connection: Arc<RawConnection<Coder>>,
+  connection: Arc<SecureConnection<Coder>>,
 ) {
   let addrs = state
     .addr2user

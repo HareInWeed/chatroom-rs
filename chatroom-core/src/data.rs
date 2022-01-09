@@ -13,7 +13,8 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub enum SecureMsg {
-  Key([u8; 32]),
+  MyKey([u8; 32]),
+  PeerKey([u8; 32]),
   Msg(Vec<u8>),
 }
 
@@ -100,6 +101,9 @@ pub enum ErrorCode {
   // login
   #[error("login is required for the operation")]
   LoginRequired,
+  // secure
+  #[error("failed to establish a secure connection")]
+  ConnectionNotSecure,
   // general
   #[error("operation is not supported")]
   Unsupported,

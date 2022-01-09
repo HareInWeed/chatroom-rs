@@ -1,6 +1,7 @@
 use std::{
   collections::{BTreeMap, HashMap},
   io::{self, Write},
+  iter,
   net::{self, SocketAddr},
   result::Result,
   sync::Arc,
@@ -26,6 +27,7 @@ use time::OffsetDateTime;
 
 use sha2::{Digest, Sha256};
 
+use crypto_box::PublicKey;
 /// Chatroom client
 #[derive(Parser, Debug)]
 #[clap(about, version, author)]
@@ -67,6 +69,7 @@ struct PersonalInfo {
 struct State {
   addr2user: RwHashMap<SocketAddr, String>,
   users: RwHashMap<String, UserInfo>,
+  pub_keys: Arc<RwHashMap<SocketAddr, PublicKey>>,
   group_history: RwBTreeMap<OffsetDateTime, OwnedChatEntry>,
   ono2one_history: RwHashMap<String, BTreeMap<OffsetDateTime, ChatEntry>>,
   personal_info: Arc<Mutex<Option<PersonalInfo>>>,
@@ -79,6 +82,7 @@ impl State {
     State {
       addr2user: Default::default(),
       users: Default::default(),
+      pub_keys: Default::default(),
       group_history: Default::default(),
       ono2one_history: Default::default(),
       personal_info: Default::default(),
@@ -120,12 +124,21 @@ async fn main() -> Result<(), Error> {
 
   let coder = default_coder();
 
-  let (connection, receiver) = Connection::new(sock, coder, StdDuration::from_secs(5), 5);
+  let (connection, receiver, _) = Connection::new(
+    sock,
+    coder,
+    state.pub_keys.clone(),
+    StdDuration::from_secs(5),
+    5,
+  );
   let connection = Arc::new(connection);
+
+  connection.as_inner().exchange_key_with(server_addr).await?;
 
   {
     let state = state.clone();
     let coder = coder.clone();
+    let connection = connection.clone();
     let mut receiver = receiver;
     tokio::spawn(async move {
       loop {
@@ -144,7 +157,10 @@ async fn main() -> Result<(), Error> {
                     .addr2user
                     .write()
                     .insert(info.ip_address, name.clone());
-                  // TODO: well, this won't handle new registered user really well
+                  connection
+                    .as_inner()
+                    .update_pub_keys(iter::once((info.pub_key.clone().into(), info.ip_address)));
+                  // TODO: well, this won't handle new registered user really well,
                   // if future online unrelated info are included in user info
                   state
                     .users
@@ -179,6 +195,8 @@ async fn main() -> Result<(), Error> {
                     Some(s) => s,
                     None => continue,
                   };
+
+                  connection.as_inner().release(online_info.ip_address);
 
                   if let None = state.addr2user.write().remove(&online_info.ip_address) {
                     continue;
@@ -310,6 +328,7 @@ async fn main() -> Result<(), Error> {
                     loop {
                       interval.tick().await;
                       if let Err(_) = connection
+                        .as_inner()
                         .send_to_with_empty_meta(&Command::Heartbeat, server_addr)
                         .await
                       {
@@ -334,6 +353,24 @@ async fn main() -> Result<(), Error> {
                     }
                   })
                   .collect();
+                connection
+                  .as_inner()
+                  .update_pub_keys(users.iter().filter_map(|u| {
+                    if let UserInfo {
+                      online_info:
+                        Some(UserOnlineInfo {
+                          ip_address,
+                          pub_key,
+                          ..
+                        }),
+                      ..
+                    } = u
+                    {
+                      Some((pub_key.clone().into(), ip_address.clone()))
+                    } else {
+                      None
+                    }
+                  }));
                 *state.users.write() = users.into_iter().map(|u| (u.name.clone(), u)).collect();
 
                 let my_addr = {
@@ -400,6 +437,7 @@ async fn main() -> Result<(), Error> {
               if let Some(UserOnlineInfo { ip_address, .. }) = online_info {
                 let timestamp = OffsetDateTime::now_utc();
                 connection
+                  .as_inner()
                   .send_to_with_empty_meta(
                     &Message {
                       to_all: false,
@@ -461,6 +499,7 @@ async fn main() -> Result<(), Error> {
             })
             .collect::<Vec<_>>();
           if let Err(_) = connection
+            .as_inner()
             .send_to_multiple_with_empty_meta(
               &Message {
                 to_all: true,
@@ -507,6 +546,24 @@ async fn main() -> Result<(), Error> {
                   }
                 })
                 .collect();
+              connection
+                .as_inner()
+                .update_pub_keys(users.iter().filter_map(|u| {
+                  if let UserInfo {
+                    online_info:
+                      Some(UserOnlineInfo {
+                        ip_address,
+                        pub_key,
+                        ..
+                      }),
+                    ..
+                  } = u
+                  {
+                    Some((pub_key.clone().into(), ip_address.clone()))
+                  } else {
+                    None
+                  }
+                }));
               let my_addr = state
                 .users
                 .read()

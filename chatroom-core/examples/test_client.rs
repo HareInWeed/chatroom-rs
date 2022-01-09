@@ -1,7 +1,9 @@
 use std::{
+  collections::HashMap,
   io::{self, Write},
   net,
   result::Result,
+  sync::Arc,
   time::Duration as StdDuration,
 };
 
@@ -15,7 +17,11 @@ use chatroom_core::{
   utils::Error,
 };
 
+use parking_lot::RwLock;
+
 use sha2::{Digest, Sha256};
+
+use crypto_box::PublicKey;
 
 /// Chatroom client
 #[derive(Parser, Debug)]
@@ -55,7 +61,15 @@ async fn main() -> Result<(), Error> {
     }
   };
 
-  let (connection, _) = Connection::new(sock, default_coder(), StdDuration::from_secs(5), 5);
+  let pub_keys: Arc<RwLock<HashMap<net::SocketAddr, PublicKey>>> = Default::default();
+
+  let (connection, _, _) = Connection::new(
+    sock,
+    default_coder(),
+    pub_keys,
+    StdDuration::from_secs(5),
+    5,
+  );
 
   let mut input = String::new();
   loop {
@@ -131,6 +145,7 @@ async fn main() -> Result<(), Error> {
       match command {
         command @ Command::Heartbeat => {
           connection
+            .as_inner()
             .send_to_with_empty_meta(&command, server_addr)
             .await?;
           println!("[client] command sent");
