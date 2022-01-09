@@ -149,6 +149,7 @@ const App: FC = () => {
                 set_server_status("busy");
                 await invoke("stop_server");
                 set_user_info([]);
+                set_logs([]);
                 set_server_status("ready");
               }
             }}

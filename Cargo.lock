@@ -176,6 +176,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "blake2b_simd"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72936ee4afc7f8f736d1c38383b56480b5497b4617b4a77bdbf1d2ababc76127"
+dependencies = [
+ "arrayref",
+ "arrayvec 0.7.2",
+ "constant_time_eq",
+]
+
+[[package]]
 name = "blake3"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -358,10 +369,21 @@ dependencies = [
 name = "chatroom-client"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "byteorder",
+ "chatroom-core",
+ "crypto_box",
+ "futures",
+ "parking_lot",
+ "rand 0.8.4",
+ "rust-argon2 1.0.0",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
+ "time 0.3.5",
+ "tokio",
 ]
 
 [[package]]
@@ -375,7 +397,7 @@ dependencies = [
  "futures",
  "parking_lot",
  "rand 0.8.4",
- "rust-argon2",
+ "rust-argon2 1.0.0",
  "serde",
  "sha2",
  "thiserror",
@@ -394,7 +416,7 @@ dependencies = [
  "futures",
  "parking_lot",
  "rand 0.8.4",
- "rust-argon2",
+ "rust-argon2 1.0.0",
  "serde",
  "serde_json",
  "sha2",
@@ -2583,7 +2605,7 @@ checksum = "de0737333e7a9502c789a36d7c7fa6092a49895d4faa31ca5df163857ded2e9d"
 dependencies = [
  "getrandom 0.1.16",
  "redox_syscall 0.1.57",
- "rust-argon2",
+ "rust-argon2 0.8.3",
 ]
 
 [[package]]
@@ -2661,7 +2683,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b18820d944b33caa75a71378964ac46f58517c92b6ae5f762636247c09e78fb"
 dependencies = [
  "base64",
- "blake2b_simd",
+ "blake2b_simd 0.5.11",
+ "constant_time_eq",
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "rust-argon2"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b50162d19404029c1ceca6f6980fe40d45c8b369f6f44446fa14bb39573b5bb9"
+dependencies = [
+ "base64",
+ "blake2b_simd 1.0.0",
  "constant_time_eq",
  "crossbeam-utils",
 ]

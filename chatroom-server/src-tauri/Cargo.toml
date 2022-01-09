@@ -30,7 +30,7 @@ byteorder = "1"
 crypto_box = "0.7"
 rand = "0.8"
 sha2 = "0.10"
-rust-argon2 = "0.8"
+rust-argon2 = "1"
 chatroom-core = { path = "../../chatroom-core" }
 
 [features]
