@@ -3,7 +3,6 @@ import React, { FC, useState, useEffect, useCallback, useRef } from "react";
 import {
   Button,
   TextField,
-  Link,
   Box,
   Typography,
   List,
@@ -117,15 +116,10 @@ const ChatPage: FC = () => {
 
   const bottomTag = useRef<HTMLSpanElement | null>(null);
   const input_textarea = useRef<HTMLTextAreaElement>(null);
-  const [_force_rerender, set_force_rerender] = useState(false); // eslint-disable no-unused-vars
   const [expand, set_expand] = useState<boolean>(false);
   const [modal_open, set_modal_open] = useState<boolean>(false);
   const [current_chat, set_current_chat] = useState<string | null>(null);
   const [message, set_message] = useState("");
-
-  const force_rerender = useCallback(() => {
-    set_force_rerender((b) => !b);
-  }, []);
 
   const refresh_user_info = useCallback(async () => {
     const name = ((await invoke("get_personal_info")) as any).name;
