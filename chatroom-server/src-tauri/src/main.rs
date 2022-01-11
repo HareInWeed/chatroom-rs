@@ -3,16 +3,16 @@
   windows_subsystem = "windows"
 )]
 
-mod server_core;
+mod server;
 mod utils;
 
 use std::{iter, sync::Arc};
 
-use server_core::Server;
+use server::Server;
 
 use chatroom_core::{
   data::{default_coder, DefaultCoder, User},
-  utils::ErrorMsg,
+  utils::{Error, ErrorMsg},
 };
 
 use parking_lot::RwLock;
@@ -20,6 +20,8 @@ use parking_lot::RwLock;
 use std::time::Duration as StdDuration;
 
 use serde::{Deserialize, Serialize};
+
+use utils::log;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct Settings {
@@ -54,17 +56,31 @@ async fn start_server(
     server_addr,
   } = state.settings.read().clone();
   stop_server(state.clone()).await?;
-  *state.server.write() = Some(
-    Server::new(
-      default_coder(),
-      iter::empty(),
-      app,
-      heartbeat_interval,
-      &server_addr,
-    )
-    .await?,
-  );
-  Ok(())
+  let server = Server::new(
+    default_coder(),
+    iter::empty(),
+    app.clone(),
+    heartbeat_interval,
+    &server_addr,
+  )
+  .await;
+  match server {
+    Ok(server) => {
+      *state.server.write() = Some(server);
+      Ok(())
+    }
+    Err(ref err @ Error::Network(ref inner)) => {
+      if matches!(inner.raw_os_error(), Some(10048)) {
+        log!(
+          &app,
+          "[[server]] [error] [{timestamp}] address \"{}\" is already bound",
+          server_addr
+        );
+      }
+      Err(err.into())
+    }
+    Err(err) => Err(err.into()),
+  }
 }
 
 #[tauri::command]

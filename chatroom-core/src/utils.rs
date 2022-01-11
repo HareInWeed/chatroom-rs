@@ -37,7 +37,7 @@ pub enum Error {
   Network(#[from] std::io::Error),
   #[error(transparent)]
   StdIO(std::io::Error),
-  #[error(transparent)]
+  #[error("request timeout")]
   Timeout(#[from] tokio::time::error::Elapsed),
   #[error(transparent)]
   Format(#[from] std::fmt::Error),
@@ -49,6 +49,8 @@ pub enum Error {
   Connection(#[from] crate::connection::Error),
   #[error(transparent)]
   InvalidSockAddr(#[from] std::net::AddrParseError),
+  #[error("response not supported")]
+  UnsupportedResponse,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

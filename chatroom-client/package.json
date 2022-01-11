@@ -1,5 +1,5 @@
 {
-  "name": "chatroom-server",
+  "name": "chatroom-client",
   "version": "0.1.0",
   "private": true,
   "dependencies": {
@@ -16,18 +16,24 @@
     "@types/node": "^12.0.0",
     "@types/react": "^17.0.0",
     "@types/react-dom": "^17.0.0",
+    "notistack": "^2.0.3",
     "react": "^17.0.2",
     "react-dom": "^17.0.2",
+    "react-hook-form": "^7.22.5",
     "react-scripts": "4.0.3",
     "typescript": "^4.1.2",
+    "unstated-next": "^1.1.0",
     "web-vitals": "^1.0.1"
   },
   "scripts": {
+    "dev1": "npm run cross-env -- PORT=8001 npm run tauri -- dev -e -c \"{\\\"build\\\":{\\\"devPath\\\":\\\"http://localhost:8001\\\"}}\"",
+    "dev2": "npm run cross-env -- PORT=8002 npm run tauri -- dev -e -c \"{\\\"build\\\":{\\\"devPath\\\":\\\"http://localhost:8002\\\"}}\"",
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "cross-env": "cross-env"
   },
   "eslintConfig": {
     "extends": [

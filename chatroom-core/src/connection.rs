@@ -109,7 +109,10 @@ impl<Coder: 'static + Options + Copy + Send + Sync> SecureConnection<Coder> {
           let mut secure_boxes = self.secure_boxes.write();
           if let Some(secure_box) = secure_boxes.get_mut(&addr) {
             let nonce = generate_nonce(&mut secure_box.de_nonce_gen);
-            let plain_data = secure_box.coder.decrypt(&nonce, &ciphertext[..]).unwrap();
+            let plain_data = match secure_box.coder.decrypt(&nonce, &ciphertext[..]) {
+              Ok(s) => s,
+              Err(_) => break Err(Error::DecryptionFailed),
+            };
             break Ok((plain_data, addr));
           } else {
             break Err(Error::NoSrcKey);
@@ -133,7 +136,10 @@ impl<Coder: 'static + Options + Copy + Send + Sync> SecureConnection<Coder> {
     let mut secure_boxes = self.secure_boxes.write();
     if let Some(b) = secure_boxes.get_mut(&addr) {
       let nonce = generate_nonce(&mut b.en_nonce_gen);
-      let encrypted_data = b.coder.encrypt(&nonce, buf).unwrap(); // TODO: log error
+      let encrypted_data = match b.coder.encrypt(&nonce, buf) {
+        Ok(s) => s,
+        Err(_) => return Err(Error::EncryptionFailed),
+      };
       let secure_msg = SecureMsg::Msg(encrypted_data);
       let msg = self.coder.serialize(&secure_msg)?;
       Ok(msg)
@@ -466,6 +472,10 @@ pub enum Error {
   OneShotReceiveError(#[from] sync::oneshot::error::RecvError),
   #[error("mpsc channel closed")]
   MpscClosed,
+  #[error("error occurred during encryption")]
+  EncryptionFailed,
+  #[error("error occurred during decryption")]
+  DecryptionFailed,
   #[error("public key for given destination not found")]
   NoDestKey,
   #[error("public key for given source not found")]

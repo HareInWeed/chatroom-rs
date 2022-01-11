@@ -55,7 +55,7 @@ const App: FC = () => {
     return () => {
       unsubscribe.then((f) => f());
     };
-  });
+  }, []);
 
   useEffect(() => {
     const unsubscribe = listen("user-info-updated", (log) => {
@@ -75,7 +75,7 @@ const App: FC = () => {
     return () => {
       unsubscribe.then((f) => f());
     };
-  });
+  }, []);
 
   return (
     <ThemeProvider theme={theme}>
@@ -238,7 +238,7 @@ const App: FC = () => {
               }}
             >
               <TableContainer component={Box}>
-                <Table sx={{ minWidth: 400 }} size="small">
+                <Table sx={{ minWidth: 380 }} size="small">
                   <TableHead>
                     <TableRow>
                       <TableCell>用户名</TableCell>

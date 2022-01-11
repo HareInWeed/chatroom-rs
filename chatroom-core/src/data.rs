@@ -122,9 +122,12 @@ pub enum ErrorCode {
   // login
   #[error("username or password are invalid")]
   InvalidUserOrPass,
-  // login
   #[error("login is required for the operation")]
   LoginRequired,
+  #[error("user is offline")]
+  UserOffline,
+  #[error("user is not existed")]
+  UserNotExisted,
   // secure
   #[error("failed to establish a secure connection")]
   ConnectionNotSecure,

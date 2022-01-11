@@ -9,7 +9,7 @@ use chatroom_core::{
     default_coder, Command, ErrorCode, Notification, Response, ResponseData, User, UserInfo,
     UserOnlineInfo,
   },
-  utils::{default_timeout, Error},
+  utils::Error,
 };
 
 use argon2;

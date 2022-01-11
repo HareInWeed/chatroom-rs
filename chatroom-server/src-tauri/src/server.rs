@@ -91,13 +91,13 @@ where
     users: I,
     app_handle: AppHandle,
     heartbeat_interval: Duration,
-    server_addr: &String,
+    server_addr: &str,
   ) -> Result<Server<Coder>, Error>
   where
     I: Iterator<Item = (String, UserEssential)>,
   {
     let state = Arc::new(ServerState::from_user_essentials(heartbeat_interval, users));
-    let sock = UdpSocket::bind(&server_addr).await?;
+    let sock = UdpSocket::bind(server_addr).await?;
 
     log!(
       &app_handle,
@@ -188,6 +188,9 @@ where
     }
     if let Some(handle) = self.req_receiver.take() {
       handle.abort();
+    }
+    for (_, timer) in self.state.user_active_timers.write().iter() {
+      timer.abort();
     }
   }
 }
