@@ -424,6 +424,8 @@ dependencies = [
  "tauri-build",
  "time 0.3.5",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3554,6 +3556,7 @@ dependencies = [
  "sharded-slab",
  "smallvec",
  "thread_local",
+ "time 0.3.5",
  "tracing",
  "tracing-core",
  "tracing-log",

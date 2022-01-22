@@ -28,7 +28,7 @@ use tauri::{AppHandle, Manager};
 
 use time;
 
-use crate::utils::log;
+use tracing::{error, info, info_span};
 
 type RwHashMap<K, V> = RwLock<HashMap<K, V>>;
 
@@ -99,9 +99,9 @@ where
     let state = Arc::new(ServerState::from_user_essentials(heartbeat_interval, users));
     let sock = UdpSocket::bind(server_addr).await?;
 
-    log!(
-      &app_handle,
-      "[[server]] [info] [{timestamp}] server started at {}",
+    info!(
+      source = "server",
+      "server started at {}.",
       sock.local_addr()?
     );
 
@@ -138,10 +138,9 @@ where
           let (buf, addr) = match connection.recv_from_raw(&mut buf).await {
             Ok(req) => req,
             Err(err) => {
-              log!(
-                &app_handle,
-                "[[internal]] [error] [{timestamp}] error occurred during receiving request: {}",
-                err
+              error!(
+                source = "internal",
+                "error occurred during receiving request: {}.", err
               );
               continue;
             }
@@ -153,10 +152,9 @@ where
             let app_handle = app_handle.clone();
             async move {
               if let Err(err) = process(state, connection, app_handle.clone(), buf, addr).await {
-                log!(
-                  &app_handle,
-                  "[[internal]] [error] [{timestamp}] error occurred during processing request: {}",
-                  err
+                error!(
+                  source = "internal",
+                  "error occurred during processing request: {}.", err
                 );
               }
             }
@@ -207,19 +205,13 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
 
   let response: Option<Response> = match command {
     Command::Register { username, password } => {
-      log!(
-        &app_handle,
-        "[[client]] [info] [{timestamp}] REGISTER: \"{}\" \"..\"",
-        &username
-      );
+      let _span =
+        info_span!("REGISTER", %addr, username = username.as_str(), password = "...").entered();
+      info!("new request.");
       Some(loop {
         let users = state.users.upgradable_read();
         if users.contains_key(&username) {
-          log!(
-            &app_handle,
-            "[[server]] [error] [{timestamp}] REGISTER: user \"{}\" is occupied",
-            &username
-          );
+          error!(source = "server", "user \"{}\" is occupied.", &username);
           break Err(ErrorCode::UserExisted);
         }
 
@@ -240,42 +232,31 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
         );
 
         let _ = app_handle.emit_all("user-info-updated", ());
-        log!(
-          &app_handle,
-          "[[server]] [info] [{timestamp}] REGISTER: user \"{}\" registered successfully",
-          &username
+        info!(
+          source = "server",
+          "user \"{}\" registered successfully.", &username
         );
         break Ok(ResponseData::Success);
       })
     }
     Command::Login { username, password } => {
-      log!(
-        &app_handle,
-        "[[client]] [info] [{timestamp}] [{}] LOGIN \"{}\" \"..\"",
-        &addr,
-        &username
-      );
+      let _span =
+        info_span!("LOGIN", %addr, username = username.as_str(),password = "...").entered();
+      info!("new request.");
       let response: Response = loop {
         // check username and password
         let users = state.users.upgradable_read();
         let user = match users.get(&username) {
           Some(s) => s,
           None => {
-            log!(
-              &app_handle,
-              "[[server]] [error] [{timestamp}] [{}] LOGIN: user \"{}\" does not exist",
-              &addr,
-              &username
-            );
+            error!("user \"{}\" does not exist", &username);
             break Err(ErrorCode::InvalidUserOrPass);
           }
         };
         if !argon2::verify_encoded(&user.password_hash, &password).unwrap() {
-          log!(
-            &app_handle,
-            "[[server]] [error] [{timestamp}] [{}] LOGIN: password for user \"{}\" is incorrect",
-            &addr,
-            &username
+          error!(
+            source = "server",
+            "password for user \"{}\" is incorrect.", &username
           );
           break Err(ErrorCode::InvalidUserOrPass);
         }
@@ -283,11 +264,9 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
         let pub_key = match state.pub_keys.read().get(&addr) {
           Some(pub_key) => pub_key.as_bytes().clone(),
           _ => {
-            log!(
-              &app_handle,
-              "[[server]] [error] [{timestamp}] [{}] LOGIN: failed to find public key of user \"{}\"",
-              &addr,
-              &username
+            error!(
+              source = "server",
+              "failed to find public key of user \"{}\".", &username
             );
             break Err(ErrorCode::ConnectionNotSecure);
           }
@@ -310,10 +289,9 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
               state.addr2user.write().remove(&ip_address);
             }
             let _ = app_handle.emit_all("user-info-updated", ());
-            log!(
-              &app_handle,
-              "[[server]] [info] [{timestamp}] heartbeat signal of user \"{}\" is lost",
-              &username
+            info!(
+              source = "server",
+              "heartbeat signal of user \"{}\" is lost.", &username
             );
             announce_offline(state, username, sock).await;
           })
@@ -366,10 +344,9 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
           .collect::<Vec<_>>();
 
         let _ = app_handle.emit_all("user-info-updated", ());
-        log!(
-          &app_handle,
-          "[[server]] [info] [{timestamp}] LOGIN: user \"{}\" logged in successfully",
-          &username
+        info!(
+          source = "server",
+          "user \"{}\" logged in successfully.", &username
         );
 
         break Ok(ResponseData::ChatroomStatus { users: users_info });
@@ -377,32 +354,20 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
       Some(response)
     }
     Command::ChangePassword { old, new } => {
-      log!(
-        &app_handle,
-        "[[client]] [info] [{timestamp}] [{}] CHANGE_PASSWORD \"..\" \"..\"",
-        &addr
-      );
+      let _span = info_span!("CHANGE_PASSWORD", %addr, old_pass="...", new_pass="...").entered();
+      info!("new request.");
       Some(loop {
         let addr2user = state.addr2user.read();
         let username = match addr2user.get(&addr) {
           Some(s) => s,
           None => {
-            log!(
-              &app_handle,
-              "[[server]] [error] [{timestamp}] [{}] CHANGE_PASSWORD: no online user binds to the address",
-              &addr
-            );
+            error!(source = "server", "no online user binds to the address.");
             break Err(ErrorCode::LoginRequired);
           }
         };
 
         if !state.user_active_timers.read().contains_key(username) {
-          log!(
-            &app_handle,
-            "[[server]] [error] [{timestamp}] [{}] CHANGE_PASSWORD: user \"{}\" is not online",
-            &addr,
-            &username
-          );
+          error!(source = "server", "user \"{}\" is not online.", &username);
           break Err(ErrorCode::LoginRequired);
         }
 
@@ -410,11 +375,9 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
         let user = users.get(username).unwrap(); // TODO: log error
 
         if !argon2::verify_encoded(&user.password_hash, &old).unwrap() {
-          log!(
-            &app_handle,
-            "[[server]] [error] [{timestamp}] [{}] CHANGE_PASSWORD: old password for user \"{}\" is incorrect",
-            &addr,
-            &username
+          error!(
+            source = "server",
+            "old password for user \"{}\" is incorrect.", &username
           );
           break Err(ErrorCode::InvalidUserOrPass);
         }
@@ -428,32 +391,23 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
 
         let _ = app_handle.emit_all("user-info-updated", ());
         users.get_mut(username).unwrap().password_hash = password_hash;
-        log!(
-          &app_handle,
-          "[[server]] [info] [{timestamp}] [{}] CHANGE_PASSWORD: user \"{}\" changed password successfully",
-          &addr,
-          &username
+        info!(
+          source = "server",
+          "user \"{}\" changed password successfully.", &username
         );
 
         break Ok(ResponseData::Success);
       })
     }
     Command::GetChatroomStatus => Some(loop {
-      log!(
-        &app_handle,
-        "[[client]] [info] [{timestamp}] [{}] GET_CHATROOM_STATUS",
-        &addr,
-      );
+      let _span = info_span!("GET_CHATROOM_STATUS", %addr).entered();
+      info!("new request.");
 
       let addr2user = state.addr2user.read();
       let username = match addr2user.get(&addr) {
         Some(s) => s,
         None => {
-          log!(
-            &app_handle,
-            "[[server]] [error] [{timestamp}] [{}] GET_CHATROOM_STATUS: no online user binds to the address",
-            &addr
-          );
+          error!(source = "server", "no online user binds to the address.");
           break Err(ErrorCode::LoginRequired);
         }
       };
@@ -461,12 +415,7 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
       let user_active_timers = state.user_active_timers.read();
 
       if !user_active_timers.contains_key(username) {
-        log!(
-          &app_handle,
-          "[[server]] [error] [{timestamp}] [{}] GET_CHATROOM_STATUS: user \"{}\" is not online",
-          &addr,
-          &username
-        );
+        error!(source = "server", "user \"{}\" is not online.", &username);
         break Err(ErrorCode::LoginRequired);
       }
 
@@ -479,21 +428,16 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
           .collect::<Vec<_>>(),
       });
 
-      log!(
-        &app_handle,
-        "[[server]] [info] [{timestamp}] [{}] GET_CHATROOM_STATUS: user \"{}\" queried status successfully",
-        &addr,
-        &username
+      info!(
+        source = "server",
+        "user \"{}\" queried status successfully.", &username
       );
 
       break respond;
     }),
     Command::Heartbeat => {
-      log!(
-        &app_handle,
-        "[[client]] [info] [{timestamp}] [{}] HEARTBEAT",
-        &addr
-      );
+      let _span = info_span!("HEARTBEAT", %addr).entered();
+      info!("new request.");
       if let Some(username) = state.addr2user.read().get(&addr).cloned() {
         if let Some(timer) = state.user_active_timers.write().get_mut(&username) {
           timer.abort();
@@ -513,43 +457,28 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
                 state.addr2user.write().remove(&ip_address);
               }
               let _ = app_handle.emit_all("user-info-updated", ());
-              log!(
-                &app_handle,
-                "[[server]] [info] [{timestamp}] heartbeat signal of user \"{}\" is lost",
-                &username
+              info!(
+                source = "server",
+                "heartbeat signal of user \"{}\" is lost.", &username
               );
               announce_offline(state, username, sock).await;
             }
           });
-          log!(
-            &app_handle,
-            "[[server]] [info] [{timestamp}] [{}] HEARTBEAT: activity timer for user \"{}\" is updated",
-            &addr,
-            &username
+          info!(
+            source = "server",
+            "activity timer for user \"{}\" is updated.", &username
           );
         } else {
-          log!(
-            &app_handle,
-            "[[server]] [error] [{timestamp}] [{}] HEARTBEAT: user \"{}\" is not online",
-            &addr,
-            &username
-          );
+          error!(source = "server", "user \"{}\" is not online.", &username);
         }
       } else {
-        log!(
-          &app_handle,
-          "[[server]] [error] [{timestamp}] [{}] HEARTBEAT: no online user binds to the address",
-          &addr
-        );
+        error!(source = "server", "no online user binds to the address.");
       };
       None
     }
     Command::Logout => {
-      log!(
-        &app_handle,
-        "[[client]] [info] [{timestamp}] [{}] LOGOUT",
-        &addr,
-      );
+      let _span = info_span!("LOGOUT", %addr).entered();
+      info!("new request.");
       Some(match state.addr2user.write().remove(&addr) {
         Some(username) => {
           loop {
@@ -557,23 +486,16 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
             if let Some(timer) = timer {
               timer.abort();
             } else {
-              log!(
-                &app_handle,
-                "[[internal]] [error] [{timestamp}] [{}] LOGOUT: user \"{}\" is not online",
-                &addr,
-                &username
-              );
+              error!(source = "internal", "user \"{}\" is not online.", &username);
               break Err(ErrorCode::LoginRequired);
             }
 
             let user = match state.users.write().get_mut(&username) {
               Some(s) => s.online_info.take(),
               None => {
-                log!(
-                  &app_handle,
-                  "[[internal]] [error] [{timestamp}] [{}] LOGOUT: user \"{}\" does not existed",
-                  &addr,
-                  &username
+                error!(
+                  source = "internal",
+                  "user \"{}\" does not existed.", &username
                 );
                 break Err(ErrorCode::LoginRequired);
               }
@@ -590,41 +512,28 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
               });
 
               let _ = app_handle.emit_all("user-info-updated", ());
-              log!(
-                &app_handle,
-                "[[server]] [info] [{timestamp}] [{}] LOGOUT: user \"{}\" logout successfully",
-                &addr,
-                &username
+              info!(
+                source = "server",
+                "user \"{}\" logout successfully.", &username
               );
               break Ok(ResponseData::Success);
             } else {
-              log!(
-                &app_handle,
-                "[[internal]] [error] [{timestamp}] [{}] LOGOUT: online info of user \"{}\" is empty",
-                &addr,
-                &username
+              error!(
+                source = "internal",
+                "online info of user \"{}\" is empty.", &username
               );
               break Err(ErrorCode::LoginRequired);
             }
           }
         }
         None => {
-          log!(
-            &app_handle,
-            "[[server]] [error] [{timestamp}] [{}] LOGOUT: no online user binds to the address",
-            &addr
-          );
+          error!(source = "server", "no online user binds to the address.");
           Err(ErrorCode::LoginRequired)
         }
       })
     }
     cmd => {
-      log!(
-        &app_handle,
-        "[[internal]] [error] [{timestamp}] [{}] Unsupported Message: \"{:?}\"",
-        &addr,
-        &cmd
-      );
+      error!(source = "internal", "Unsupported Message: \"{:?}\".", &cmd);
       Some(Err(ErrorCode::Unsupported))
     }
   };

@@ -31,6 +31,8 @@ crypto_box = "0.7"
 rand = "0.8"
 sha2 = "0.10"
 rust-argon2 = "1"
+tracing = "0.1.29"
+tracing-subscriber = { version = "0.3.5", features = ["local-time"] }
 chatroom-core = { path = "../../chatroom-core" }
 
 [features]

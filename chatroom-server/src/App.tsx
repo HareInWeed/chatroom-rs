@@ -129,8 +129,6 @@ const App: FC = () => {
             onClick={async () => {
               if (server_status === "ready") {
                 try {
-                  console.log(heartbeat_time);
-                  console.log(ip_addr === "" ? "0.0.0.0:0" : ip_addr);
                   await invoke("set_settings", {
                     heartbeatInterval:
                       heartbeat_time === ""

@@ -12,8 +12,6 @@ use chatroom_core::{
   utils::Error,
 };
 
-use argon2;
-
 use rand::Rng;
 
 use parking_lot::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
@@ -80,7 +78,7 @@ async fn main() -> Result<(), Error> {
           if let Some(name) = state.addr2user.read().get(&addr) {
             if let Some(user) = state.users.write().get_mut(name) {
               if let Some(info) = user.online_info.as_mut() {
-                info.pub_key = key.as_bytes().clone();
+                info.pub_key = *key.as_bytes();
               }
             }
           }
@@ -139,7 +137,7 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
         users.insert(
           username.clone(),
           User {
-            name: username.clone(),
+            name: username,
             password_hash,
             online_info: None,
           },
@@ -161,7 +159,7 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
         }
 
         let pub_key = match state.pub_keys.read().get(&addr) {
-          Some(pub_key) => pub_key.as_bytes().clone(),
+          Some(pub_key) => *pub_key.as_bytes(),
           _ => break Err(ErrorCode::ConnectionNotSecure),
         };
 
@@ -307,7 +305,7 @@ async fn process<Coder: 'static + Options + Copy + Send + Sync>(
               None => break Err(ErrorCode::LoginRequired),
             };
 
-            if let Some(_) = user {
+            if user.is_some() {
               let state = state.clone();
               let sock = connection.clone();
               tokio::spawn(async move {
